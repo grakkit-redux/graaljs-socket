@@ -9,6 +9,7 @@ const J = {
   ServerSocket: Java.type('java.nio.channels.AsynchronousServerSocketChannel'),
   Socket: Java.type('java.nio.channels.AsynchronousSocketChannel'),
   Throwable: Java.type('java.lang.Throwable'),
+  TimeUnit: Java.type('java.util.concurrent.TimeUnit')
 }
 
 const utf8 = J.Charset.forName('utf-8')
@@ -27,19 +28,17 @@ export class SocketServer extends EventEmitter {
 	  }
   }
 
-  bind(port: number, host?: string, backlog?: number, callback?: () => void): void {
-	  const backlogSize = typeof backlog !== 'undefined' ? backlog : 511
+  bind(port: number, host?: string, callback?: () => void): void {
 	  if (typeof callback !== 'undefined') {
 	    this.on('listening', callback)
 	  }
 
 	  const completionHandler = {
-	    completed: ((jSocket: typeof Socket, _: null): void => {
+	    completed: ((jSocket: typeof Socket): void => {
 		    try {
-		      // Depending on how GraalVM handles things, may need to do
-		      // some Promise.resolve().then(...) shenanigans. Initially
-		      // trying it raw though.
-		      this._serverSocket.accept(null, completionHandler)
+          aspireTo(this._serverSocket.accept())
+            .then(completionHandler.completed)
+            .catch(completionHandler.failed)
 
 		      const socket = new Socket({
 			      javaSocket: jSocket
@@ -51,7 +50,7 @@ export class SocketServer extends EventEmitter {
 		    }
 	    }).bind(this),
 
-	    failed: ((err: typeof J.Throwable, _: null): void => {
+	    failed: ((err: typeof J.Throwable): void => {
 		    this.emit('error', err)
 	    }).bind(this)
 	  }
@@ -65,31 +64,36 @@ export class SocketServer extends EventEmitter {
 		    .open()
 		    .bind(socketAddress)
 
-	    this._serverSocket.accept(null, completionHandler)
+	    aspireTo(this._serverSocket.accept())
+        .then(completionHandler.completed)
+        .catch(completionHandler.failed)
 	    this.emit('listening')
 	  } catch (err) {
 	    if (typeof callback !== 'undefined') {
-		    this.removeListener('listening', callback)
+        this.removeListener('listening', callback)
 	    }
 	    this.emit('error', err)
 	  }
   }
 
-  close(callback?: () => void): void {
-	  if (typeof callback !== 'undefined') {
-	    this.on('close', callback)
-	  }
+  // Fails with:
+  // java.util.concurrent.ExecutionException: java.nio.channels.AsynchronousCloseException
+  //
+  // close(callback?: () => void): void {
+	//   if (typeof callback !== 'undefined') {
+	//     this.on('close', callback)
+	//   }
 
-	  try {
-	    this._serverSocket.close()
-	    this.emit('close')
-	  } catch (err) {
-	    if (typeof callback !== 'undefined') {
-		    this.removeListener('close', callback)
-	    }
-	    this.emit('error', err)
-	  }
-  }
+	//   try {
+	//     this._serverSocket.close()
+	//     this.emit('close')
+	//   } catch (err) {
+	//     if (typeof callback !== 'undefined') {
+	// 	    this.removeListener('close', callback)
+	//     }
+	//     this.emit('error', err)
+	//   }
+  // }
 }
 
 export type SocketOptions = {
@@ -123,18 +127,20 @@ export class Socket extends EventEmitter {
 
 	  try {
 	    const completionHandler = {
-		    completed: ((bytes: number, _: null): void => {
+		    completed: ((bytes: number): void => {
 		      this.emit('drain')
 		    }).bind(this),
 
-		    failed: ((err: typeof J.Throwable, _: null): void => {
+		    failed: ((err: typeof J.Throwable): void => {
 		      this.emit('error', err)
 		    }).bind(this)
 	    }
 
 	    const buffer = utf8.encode(data)
 	    buffer.rewind()
-	    this._socket.write(buffer, null, completionHandler)
+	    aspireTo(this._socket.write(buffer))
+        .then(completionHandler.completed)
+        .catch(completionHandler.failed)
 	  } catch (err) {
 	    this.emit('error', err)
 	  }
@@ -142,14 +148,13 @@ export class Socket extends EventEmitter {
 
   private doRead(): void {
 	  const completionHandler = {
-	    // currently don't handle -1 bytes
-	    completed: ((bytes: number, _: null): void => {
+	    completed: ((bytes: number): void => {
 		    if (bytes === -1) {
 		      // End of stream
 		      this.emit('end')
 		      this.removeAllListeners()
 		      this._socket.close()
-		    } else {
+		    } else { // It'd be nice to improve error handling in this block
 		      this.readBuffer.rewind()
 
 		      let outBytes = []
@@ -168,10 +173,31 @@ export class Socket extends EventEmitter {
 		    }
 	    }).bind(this),
 
-	    failed: ((err: typeof J.Throwable, _: null): void => {
+	    failed: ((err: typeof J.Throwable): void => {
 		    this.emit('error', err)
 	    }).bind(this)
 	  }
-	  this._socket.read(this.readBuffer, null, completionHandler)
+	  aspireTo(this._socket.read(this.readBuffer))
+      .then(completionHandler.completed)
+      .catch(completionHandler.failed)
   }
+}
+
+// Can't type the future because typing Java interop is a mess
+function aspireTo(future): Promise<any> {
+  return new Promise((resolve, reject) => {
+	  const id = setInterval(() => {
+	    try {
+		    const result = future.get(0, J.TimeUnit.NANOSECONDS)
+		    clearInterval(id)
+		    resolve(result)
+	    } catch (exc) {
+		    // typeof does not work for Java exceptions
+		    if (`${exc}` !== 'java.util.concurrent.TimeoutException') {
+		      clearInterval(id)
+		      reject(exc)
+		    }
+	    }
+	  }, 50)
+  })
 }
