@@ -3,17 +3,11 @@ import { EventEmitter } from 'events'
 declare const Java
 
 const J = {
-  Byte: Java.type('java.lang.Byte'),
   ByteBuffer: Java.type('java.nio.ByteBuffer'),
-  CharBuffer: Java.type('java.nio.CharBuffer'),
   Charset: Java.type('java.nio.charset.Charset'),
-  CompletionHandler: Java.type('java.nio.channels.CompletionHandler'),
   InetSocketAddress: Java.type('java.net.InetSocketAddress'),
   ServerSocket: Java.type('java.nio.channels.AsynchronousServerSocketChannel'),
   Socket: Java.type('java.nio.channels.AsynchronousSocketChannel'),
-  StandardCharsets: Java.type('java.nio.charset.StandardCharsets'),
-  TimeoutException: Java.type('java.util.concurrent.TimeoutException'),
-  TimeUnit: Java.type('java.util.concurrent.TimeUnit'),
   Throwable: Java.type('java.lang.Throwable'),
 }
 
